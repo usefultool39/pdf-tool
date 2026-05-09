@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Local runtime files
+uploads/
+downloads/
+out_images/
+*.log
+
+# User PDF/image data and generated outputs
+archive/*
+!archive/
+!archive/README.md
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tif
+*.tiff
+*.zip
+
+# Keep source and docs
+!README.md
+!LICENSE
+!requirements.txt
+!app.py
+!启动.bat
+!cli/
+!cli/*.py
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
