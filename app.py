@@ -16,7 +16,7 @@ from io import BytesIO
 from pathlib import Path
 
 from flask import Flask, render_template_string, request, send_file, jsonify
-from PIL import Image
+from PIL import Image, ImageOps
 from pypdf import PdfReader, PdfWriter
 from werkzeug.utils import secure_filename
 
@@ -33,6 +33,10 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max
 UPLOAD_FOLDER = tempfile.mkdtemp()
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5000
+MIN_RENDER_DPI = 36
+MAX_RENDER_DPI = 600
+MAX_COMPRESSED_IMAGE_KB = 50 * 1024
+MAX_LONG_IMAGE_PIXELS = 60_000_000
 
 # 程序退出时自动清理临时目录
 atexit.register(shutil.rmtree, UPLOAD_FOLDER, ignore_errors=True)
@@ -380,6 +384,19 @@ def safe_temp_path(original_filename, suffix=None):
     return os.path.join(UPLOAD_FOLDER, f"{os.urandom(4).hex()}_{safe_name}")
 
 
+def prepare_uploaded_image(file_storage):
+    """读取上传图片、应用 EXIF 方向，并统一为白底 RGB。"""
+    with Image.open(file_storage) as source:
+        corrected = ImageOps.exif_transpose(source)
+        if "A" in corrected.getbands() or "transparency" in corrected.info:
+            rgba = corrected.convert("RGBA")
+            image = Image.new("RGB", rgba.size, "white")
+            image.paste(rgba, mask=rgba.getchannel("A"))
+            rgba.close()
+            return image
+        return corrected.convert("RGB")
+
+
 def format_size(size_bytes):
     """格式化文件大小为可读字符串"""
     if size_bytes > 1024 * 1024:
@@ -431,20 +448,24 @@ def maybe_open_browser(url):
 
 
 def get_pdf_info(pdf_path):
-    """获取 PDF 信息"""
-    reader = PdfReader(pdf_path)
-    total_pages = len(reader.pages)
-    portrait_count = 0
-    landscape_count = 0
-    for page in reader.pages:
-        w = float(page.mediabox.width)
-        h = float(page.mediabox.height)
-        if h > w:
-            portrait_count += 1
-        else:
-            landscape_count += 1
-    close_reader(reader)
-    return f"总页数：{total_pages} | 竖版：{portrait_count} | 横版：{landscape_count}"
+    """获取 PDF 信息。"""
+    reader = None
+    try:
+        reader = PdfReader(pdf_path)
+        total_pages = len(reader.pages)
+        portrait_count = 0
+        landscape_count = 0
+        for page in reader.pages:
+            w = float(page.mediabox.width)
+            h = float(page.mediabox.height)
+            if h > w:
+                portrait_count += 1
+            else:
+                landscape_count += 1
+        return f"总页数：{total_pages} | 竖版：{portrait_count} | 横版：{landscape_count}"
+    finally:
+        if reader is not None:
+            close_reader(reader)
 
 
 # ============ 路由 ============
@@ -476,21 +497,21 @@ def api_images_to_pdf():
     if 'images' not in request.files:
         return jsonify({'success': False, 'message': '请上传图片'})
 
-    files = request.files.getlist('images')
-    if not files or files[0].filename == '':
+    files = [f for f in request.files.getlist('images') if f.filename]
+    if not files:
         return jsonify({'success': False, 'message': '请上传至少一张图片'})
 
     force_landscape = 'force_landscape' in request.form
+    images = []
 
     try:
-        images = []
-        for f in files:
-            img = Image.open(f)
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            if force_landscape and img.height > img.width:
-                img = img.rotate(90, expand=True)
-            images.append(img)
+        for uploaded_file in files:
+            image = prepare_uploaded_image(uploaded_file)
+            if force_landscape and image.height > image.width:
+                rotated = image.rotate(90, expand=True)
+                image.close()
+                image = rotated
+            images.append(image)
 
         output_filename = f"images_to_pdf_{os.urandom(4).hex()}.pdf"
         output_path = os.path.join(UPLOAD_FOLDER, output_filename)
@@ -504,6 +525,9 @@ def api_images_to_pdf():
         })
     except Exception as e:
         return jsonify({'success': False, 'message': f'处理失败: {e}'})
+    finally:
+        for image in images:
+            image.close()
 
 
 @app.route('/api/merge_pdfs', methods=['POST'])
@@ -586,6 +610,7 @@ def api_remove_pages():
 
     pdf_file = request.files['pdf']
     temp_path = safe_temp_path(pdf_file.filename)
+    reader = None
 
     try:
         pdf_file.save(temp_path)
@@ -596,17 +621,18 @@ def api_remove_pages():
         pages_to_remove = parse_page_range(pages_str, total_pages)
         if not pages_to_remove:
             return jsonify({'success': False, 'message': '没有有效的页码'})
+        if len(pages_to_remove) >= total_pages:
+            return jsonify({'success': False, 'message': '不能删除全部页面，请至少保留 1 页'})
 
         remove_idx = {p - 1 for p in pages_to_remove}
-        for i in range(total_pages):
+        for i, page in enumerate(reader.pages):
             if i not in remove_idx:
-                writer.add_page(reader.pages[i])
-        close_reader(reader)
+                writer.add_page(page)
 
         output_filename = f"removed_{os.urandom(4).hex()}.pdf"
         output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-        with open(output_path, "wb") as f:
-            writer.write(f)
+        with open(output_path, "wb") as output_file:
+            writer.write(output_file)
 
         return jsonify({
             'success': True,
@@ -616,6 +642,8 @@ def api_remove_pages():
     except Exception as e:
         return jsonify({'success': False, 'message': f'处理失败: {e}'})
     finally:
+        if reader is not None:
+            close_reader(reader)
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -626,72 +654,63 @@ def api_insert_pdf():
         return jsonify({'success': False, 'message': '请上传主文档和要插入的文档'})
 
     position = request.form.get('position', 'after')
+    if position not in {'start', 'end', 'before', 'after'}:
+        return jsonify({'success': False, 'message': '插入位置无效'})
 
     try:
         page_index = int(request.form.get('page_index', 1))
     except ValueError:
-        page_index = 1
+        return jsonify({'success': False, 'message': '页码必须是数字'})
 
     main_file = request.files['main_pdf']
     insert_file = request.files['insert_pdf']
-
     main_path = safe_temp_path(main_file.filename)
     insert_path = safe_temp_path(insert_file.filename)
+    reader_main = None
+    reader_ins = None
 
     try:
         main_file.save(main_path)
         insert_file.save(insert_path)
-
         reader_main = PdfReader(main_path)
         reader_ins = PdfReader(insert_path)
         writer = PdfWriter()
 
         total_main = len(reader_main.pages)
         insert_count = len(reader_ins.pages)
+        if total_main == 0 or insert_count == 0:
+            return jsonify({'success': False, 'message': 'PDF 不能是空文档'})
 
         if position == 'start':
-            for p in reader_ins.pages:
-                writer.add_page(p)
-            for p in reader_main.pages:
-                writer.add_page(p)
+            for page in reader_ins.pages:
+                writer.add_page(page)
+            for page in reader_main.pages:
+                writer.add_page(page)
             position_text = "文档最前面"
-
         elif position == 'end':
-            for p in reader_main.pages:
-                writer.add_page(p)
-            for p in reader_ins.pages:
-                writer.add_page(p)
+            for page in reader_main.pages:
+                writer.add_page(page)
+            for page in reader_ins.pages:
+                writer.add_page(page)
             position_text = "文档最后面"
-
-        elif position == 'before':
+        else:
             if not 1 <= page_index <= total_main:
                 return jsonify({'success': False, 'message': f'页码超范围：1 ~ {total_main}'})
-            pos = page_index - 1
-            for i in range(total_main):
-                if i == pos:
-                    for p in reader_ins.pages:
-                        writer.add_page(p)
-                writer.add_page(reader_main.pages[i])
-            position_text = f"第 {page_index} 页之前"
-
-        else:  # after
-            if not 1 <= page_index <= total_main:
-                return jsonify({'success': False, 'message': f'页码超范围：1 ~ {total_main}'})
-            pos = page_index - 1
-            for i in range(total_main):
-                writer.add_page(reader_main.pages[i])
-                if i == pos:
-                    for p in reader_ins.pages:
-                        writer.add_page(p)
-            position_text = f"第 {page_index} 页之后"
-
-        close_reader(reader_main)
-        close_reader(reader_ins)
+            insert_at = page_index - 1
+            for index, page in enumerate(reader_main.pages):
+                if position == 'before' and index == insert_at:
+                    for inserted_page in reader_ins.pages:
+                        writer.add_page(inserted_page)
+                writer.add_page(page)
+                if position == 'after' and index == insert_at:
+                    for inserted_page in reader_ins.pages:
+                        writer.add_page(inserted_page)
+            position_text = f"第 {page_index} 页{'之前' if position == 'before' else '之后'}"
 
         output_filename = f"inserted_{os.urandom(4).hex()}.pdf"
         output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-        with open(output_path, "wb") as f:
-            writer.write(f)
+        with open(output_path, "wb") as output_file:
+            writer.write(output_file)
 
         return jsonify({
             'success': True,
@@ -701,9 +720,13 @@ def api_insert_pdf():
     except Exception as e:
         return jsonify({'success': False, 'message': f'处理失败: {e}'})
     finally:
-        for p in [main_path, insert_path]:
-            if os.path.exists(p):
-                os.remove(p)
+        if reader_main is not None:
+            close_reader(reader_main)
+        if reader_ins is not None:
+            close_reader(reader_ins)
+        for path_to_remove in (main_path, insert_path):
+            if os.path.exists(path_to_remove):
+                os.remove(path_to_remove)
 
 
 @app.route('/api/reorder_pages', methods=['POST'])
@@ -713,43 +736,38 @@ def api_reorder_pages():
 
     pdf_file = request.files['pdf']
     temp_path = safe_temp_path(pdf_file.filename)
+    reader = None
 
     try:
         pdf_file.save(temp_path)
         reader = PdfReader(temp_path)
         writer = PdfWriter()
 
-        portrait_pages = []
-        landscape_pages = []
-
-        for page in reader.pages:
+        portrait_indices = []
+        landscape_indices = []
+        for index, page in enumerate(reader.pages):
             w = float(page.mediabox.width)
             h = float(page.mediabox.height)
-            if h > w:
-                portrait_pages.append(page)
-            else:
-                landscape_pages.append(page)
+            (portrait_indices if h > w else landscape_indices).append(index)
 
-        close_reader(reader)
-
-        for p in portrait_pages:
-            writer.add_page(p)
-        for p in landscape_pages:
-            writer.add_page(p)
+        for index in portrait_indices + landscape_indices:
+            writer.add_page(reader.pages[index])
 
         output_filename = f"reordered_{os.urandom(4).hex()}.pdf"
         output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-        with open(output_path, "wb") as f:
-            writer.write(f)
+        with open(output_path, "wb") as output_file:
+            writer.write(output_file)
 
         return jsonify({
             'success': True,
-            'message': f'✅ 竖版 {len(portrait_pages)} 页在前，横版 {len(landscape_pages)} 页在后',
+            'message': f'✅ 竖版 {len(portrait_indices)} 页在前，横版 {len(landscape_indices)} 页在后',
             'download_url': f'/download/{output_filename}'
         })
     except Exception as e:
         return jsonify({'success': False, 'message': f'处理失败: {e}'})
     finally:
+        if reader is not None:
+            close_reader(reader)
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -761,6 +779,7 @@ def api_normalize_landscape():
 
     pdf_file = request.files['pdf']
     temp_path = safe_temp_path(pdf_file.filename)
+    reader = None
 
     try:
         pdf_file.save(temp_path)
@@ -769,7 +788,6 @@ def api_normalize_landscape():
 
         target_width = None
         target_height = None
-
         for page in reader.pages:
             w = float(page.mediabox.width)
             h = float(page.mediabox.height)
@@ -790,12 +808,10 @@ def api_normalize_landscape():
                 landscape_count += 1
             writer.add_page(page)
 
-        close_reader(reader)
-
         output_filename = f"normalized_{os.urandom(4).hex()}.pdf"
         output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-        with open(output_path, "wb") as f:
-            writer.write(f)
+        with open(output_path, "wb") as output_file:
+            writer.write(output_file)
 
         return jsonify({
             'success': True,
@@ -805,48 +821,66 @@ def api_normalize_landscape():
     except Exception as e:
         return jsonify({'success': False, 'message': f'处理失败: {e}'})
     finally:
+        if reader is not None:
+            close_reader(reader)
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
 
 def compress_image_to_size(img, max_size_kb, output_path):
-    """压缩图片到指定大小以下（仅支持 JPG）"""
+    """尽量保持清晰度，把 JPG 压缩到指定大小以下。"""
+    if not 1 <= max_size_kb <= MAX_COMPRESSED_IMAGE_KB:
+        raise ValueError(f'图片大小限制必须在 1-{MAX_COMPRESSED_IMAGE_KB}KB 之间')
+
     max_size_bytes = max_size_kb * 1024
+    source = img if img.mode == 'RGB' else img.convert('RGB')
+    owns_source = source is not img
 
-    # 先尝试不同的质量等级
-    for quality in range(95, 10, -5):
-        buffer = BytesIO()
-        img.save(buffer, format='JPEG', quality=quality)
-        if buffer.tell() <= max_size_bytes:
-            img.save(output_path, format='JPEG', quality=quality)
-            return os.path.getsize(output_path)
+    try:
+        for scale_percent in range(100, 9, -10):
+            if scale_percent == 100:
+                candidate = source
+                owns_candidate = False
+            else:
+                new_size = (
+                    max(1, source.width * scale_percent // 100),
+                    max(1, source.height * scale_percent // 100),
+                )
+                candidate = source.resize(new_size, Image.Resampling.LANCZOS)
+                owns_candidate = True
 
-    # 如果还是太大，缩小尺寸
-    scale = 0.9
-    while scale > 0.1:
-        new_size = (int(img.width * scale), int(img.height * scale))
-        resized = img.resize(new_size, Image.LANCZOS)
+            try:
+                for quality in range(95, 9, -5):
+                    buffer = BytesIO()
+                    candidate.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    if buffer.tell() <= max_size_bytes:
+                        Path(output_path).write_bytes(buffer.getvalue())
+                        return buffer.tell()
+            finally:
+                if owns_candidate:
+                    candidate.close()
+    finally:
+        if owns_source:
+            source.close()
 
-        for quality in range(85, 10, -10):
-            buffer = BytesIO()
-            resized.save(buffer, format='JPEG', quality=quality)
-            if buffer.tell() <= max_size_bytes:
-                resized.save(output_path, format='JPEG', quality=quality)
-                return os.path.getsize(output_path)
+    raise ValueError(f'无法将图片压缩到 {max_size_kb}KB 以下')
 
-        scale -= 0.1
 
-    # 最后保底
-    resized = img.resize((int(img.width * 0.3), int(img.height * 0.3)), Image.LANCZOS)
-    resized.save(output_path, format='JPEG', quality=20)
-    return os.path.getsize(output_path)
+def render_pdf_page(page, dpi):
+    """把单页 PDF 渲染成 RGB Pillow 图片。"""
+    zoom = dpi / 72
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(zoom, zoom),
+        colorspace=fitz.csRGB,
+        alpha=False,
+    )
+    return Image.frombytes('RGB', (pix.width, pix.height), pix.samples)
 
 
 @app.route('/api/pdf_to_images', methods=['POST'])
 def api_pdf_to_images():
     if 'pdf' not in request.files:
         return jsonify({'success': False, 'message': '请上传 PDF 文件'})
-
     if not HAS_FITZ:
         return jsonify({'success': False, 'message': '请安装 PyMuPDF: pip install pymupdf'})
 
@@ -854,69 +888,76 @@ def api_pdf_to_images():
         start_page = int(request.form.get('start_page', 1))
         end_page = int(request.form.get('end_page', 1))
         dpi = int(request.form.get('dpi', 150))
-        max_size = int(request.form.get('max_size', 0))  # KB
+        max_size = int(request.form.get('max_size', 0))
     except ValueError:
         return jsonify({'success': False, 'message': '参数必须是数字'})
 
-    output_format = request.form.get('format', 'jpg').lower()
-    if output_format not in ['jpg', 'png']:
-        output_format = 'jpg'
+    if start_page < 1 or end_page < 1:
+        return jsonify({'success': False, 'message': '页码必须从 1 开始'})
+    if not MIN_RENDER_DPI <= dpi <= MAX_RENDER_DPI:
+        return jsonify({'success': False, 'message': f'DPI 必须在 {MIN_RENDER_DPI}-{MAX_RENDER_DPI} 之间'})
+    if max_size < 0 or max_size > MAX_COMPRESSED_IMAGE_KB:
+        return jsonify({'success': False, 'message': f'图片大小限制必须在 0-{MAX_COMPRESSED_IMAGE_KB}KB 之间'})
 
+    output_format = request.form.get('format', 'jpg').lower()
+    if output_format not in {'jpg', 'png'}:
+        return jsonify({'success': False, 'message': '图片格式只支持 JPG 或 PNG'})
     long_image = 'long_image' in request.form
 
     pdf_file = request.files['pdf']
     temp_path = safe_temp_path(pdf_file.filename)
     temp_dir = None
+    doc = None
+    images = []
 
     try:
         pdf_file.save(temp_path)
         doc = fitz.open(temp_path)
-        total_pages = len(doc)
+        if doc.needs_pass:
+            return jsonify({'success': False, 'message': '暂不支持加密 PDF'})
 
-        if start_page < 1:
-            start_page = 1
-        if end_page > total_pages:
-            end_page = total_pages
-        if start_page > end_page:
-            doc.close()
+        total_pages = len(doc)
+        if total_pages == 0:
+            return jsonify({'success': False, 'message': 'PDF 没有页面'})
+        end_page = min(end_page, total_pages)
+        if start_page > total_pages or start_page > end_page:
             return jsonify({'success': False, 'message': f'页码范围错误，PDF 共 {total_pages} 页'})
 
         temp_dir = tempfile.mkdtemp()
-        images = []
-        zoom = dpi / 72
 
-        for page_num in range(start_page - 1, end_page):
-            page = doc[page_num]
-            mat = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=mat)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
+        if long_image:
+            max_width = 0
+            total_height = 0
+            for page_num in range(start_page - 1, end_page):
+                image = render_pdf_page(doc[page_num], dpi)
+                images.append(image)
+                max_width = max(max_width, image.width)
+                total_height += image.height
+                if max_width * total_height > MAX_LONG_IMAGE_PIXELS:
+                    return jsonify({
+                        'success': False,
+                        'message': '长图像素过大，请减少页数或降低 DPI'
+                    })
 
-        doc.close()
+            long_img = Image.new('RGB', (max_width, total_height), 'white')
+            try:
+                y_offset = 0
+                for image in images:
+                    x_offset = (max_width - image.width) // 2
+                    long_img.paste(image, (x_offset, y_offset))
+                    y_offset += image.height
 
-        # 合并为长图
-        if long_image and len(images) > 0:
-            max_width = max(img.width for img in images)
-            total_height = sum(img.height for img in images)
-
-            long_img = Image.new('RGB', (max_width, total_height), (255, 255, 255))
-            y_offset = 0
-            for img in images:
-                x_offset = (max_width - img.width) // 2
-                long_img.paste(img, (x_offset, y_offset))
-                y_offset += img.height
-
-            ext = 'jpg' if output_format == 'jpg' else 'png'
-            output_filename = f"long_image_{os.urandom(4).hex()}.{ext}"
-            output_path = os.path.join(UPLOAD_FOLDER, output_filename)
-
-            if output_format == 'png':
-                long_img.save(output_path, format='PNG')
-            else:
-                if max_size > 0:
+                extension = 'jpg' if output_format == 'jpg' else 'png'
+                output_filename = f"long_image_{os.urandom(4).hex()}.{extension}"
+                output_path = os.path.join(UPLOAD_FOLDER, output_filename)
+                if output_format == 'png':
+                    long_img.save(output_path, format='PNG', optimize=True)
+                elif max_size > 0:
                     compress_image_to_size(long_img, max_size, output_path)
                 else:
-                    long_img.save(output_path, format='JPEG', quality=85)
+                    long_img.save(output_path, format='JPEG', quality=85, optimize=True)
+            finally:
+                long_img.close()
 
             file_size = os.path.getsize(output_path)
             return jsonify({
@@ -925,42 +966,46 @@ def api_pdf_to_images():
                 'download_url': f'/download/{output_filename}'
             })
 
-        # 正常导出多张图片
         image_paths = []
         total_size = 0
-
-        for i, img in enumerate(images):
-            page_num = start_page + i
-            if output_format == 'png':
-                out_path = os.path.join(temp_dir, f"page_{page_num}.png")
-                img.save(out_path, format='PNG')
-            else:
-                out_path = os.path.join(temp_dir, f"page_{page_num}.jpg")
-                if max_size > 0:
-                    compress_image_to_size(img, max_size, out_path)
+        for page_num in range(start_page - 1, end_page):
+            image = render_pdf_page(doc[page_num], dpi)
+            try:
+                displayed_page = page_num + 1
+                if output_format == 'png':
+                    output_path = os.path.join(temp_dir, f"page_{displayed_page}.png")
+                    image.save(output_path, format='PNG', optimize=True)
                 else:
-                    img.save(out_path, format='JPEG', quality=85)
-            total_size += os.path.getsize(out_path)
-            image_paths.append(out_path)
+                    output_path = os.path.join(temp_dir, f"page_{displayed_page}.jpg")
+                    if max_size > 0:
+                        compress_image_to_size(image, max_size, output_path)
+                    else:
+                        image.save(output_path, format='JPEG', quality=85, optimize=True)
+                total_size += os.path.getsize(output_path)
+                image_paths.append(output_path)
+            finally:
+                image.close()
 
         zip_filename = f"pdf_images_{os.urandom(4).hex()}.zip"
         zip_path = os.path.join(UPLOAD_FOLDER, zip_filename)
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for img_path in image_paths:
-                zf.write(img_path, os.path.basename(img_path))
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as archive:
+            for image_path in image_paths:
+                archive.write(image_path, os.path.basename(image_path))
 
-        format_str = "JPG" if output_format == 'jpg' else "PNG"
-        size_limit_str = f"，每张≤{max_size}KB" if max_size > 0 and output_format == 'jpg' else ""
-
+        format_str = 'JPG' if output_format == 'jpg' else 'PNG'
+        size_limit_str = f'，每张≤{max_size}KB' if max_size > 0 and output_format == 'jpg' else ''
         return jsonify({
             'success': True,
             'message': f'✅ 导出第 {start_page}-{end_page} 页，共 {len(image_paths)} 张 {format_str} 图片（总计 {format_size(total_size)}{size_limit_str}）',
             'download_url': f'/download/{zip_filename}'
         })
-
     except Exception as e:
         return jsonify({'success': False, 'message': f'处理失败: {e}'})
     finally:
+        for image in images:
+            image.close()
+        if doc is not None:
+            doc.close()
         if temp_dir and os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         if os.path.exists(temp_path):

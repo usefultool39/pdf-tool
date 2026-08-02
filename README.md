@@ -52,10 +52,20 @@ http://127.0.0.1:5000
 
 ### 手动启动
 
+Windows：
+
 ```bat
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python app.py
+```
+
+macOS / Linux：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python app.py
 ```
 
 ## 使用说明
@@ -78,7 +88,7 @@ python -m venv .venv
 
 ## PDF 转图片说明
 
-Web 页面中的 PDF 转图片功能使用 PyMuPDF，不需要额外安装 Poppler。
+Web 页面中的 PDF 转图片功能使用 PyMuPDF，不需要额外安装 Poppler。为避免意外占用过多内存，Web 端会校验 DPI（36-600），并限制超大长图；普通的多页图片导出会逐页渲染和写盘，不会一次把全部页面保存在内存中。
 
 `cli/to_picture.py` 是命令行辅助脚本，使用 `pdf2image`，可能需要 Poppler。脚本会按以下顺序查找 Poppler：
 
@@ -89,15 +99,28 @@ Web 页面中的 PDF 转图片功能使用 PyMuPDF，不需要额外安装 Poppl
 
 如果只使用 Web 页面，可以忽略 Poppler。
 
+## 测试
+
+项目使用 `pytest` 覆盖主要 Web 接口和 PDF 处理流程：
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest
+```
+
+GitHub Actions 会在 Python 3.10 和 3.12 环境中自动运行测试。
+
 ## 项目结构
 
 ```text
 pdf-tool/
 ├── app.py              # Flask Web UI 和 PDF 处理接口
-├── requirements.txt    # Python 依赖
-├── 启动.bat            # Windows 一键启动脚本
-├── cli/                # 命令行辅助脚本
-└── archive/            # 本地工作目录，不提交个人 PDF 或图片
+├── requirements.txt       # 运行依赖
+├── requirements-dev.txt   # 测试依赖
+├── tests/                 # 自动化测试
+├── 启动.bat               # Windows 一键启动脚本
+├── cli/                   # 命令行辅助脚本
+└── archive/               # 本地工作目录，不提交个人 PDF 或图片
 ```
 
 ## 发布注意
