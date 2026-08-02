@@ -1039,4 +1039,4 @@ if __name__ == '__main__':
     print("=" * 50)
     sys.stdout.flush()
     maybe_open_browser(url)
-    app.run(debug=False, host=host, port=port)
+    app.run(debug=False, host=host, port=port, use_reloader=False)

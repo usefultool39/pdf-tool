@@ -1,58 +1,47 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Flask-3.0%2B-lightgrey?logo=flask" alt="Flask">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/badge/tests-pytest-brightgreen" alt="Tests">
+</p>
+
 # PDF Tool
 
-PDF Tool 是一个本地运行的 PDF 工具集，提供 Flask Web 页面，适合在 Windows 电脑上快速处理常见 PDF 任务。文件只在本机处理，不需要上传到第三方服务。
+**PDF Tool** 是一个本地运行的 PDF 工具集，提供简洁的 Web 界面，无需上传文件到第三方服务，所有处理都在本机完成。
 
-维护者：U2Tool39
+## 功能一览
 
-## 功能
-
-- 图片转 PDF：支持多张图片合成为一个 PDF，可选择统一横向页面。
-- PDF 合并：按上传顺序合并多个 PDF 文件。
-- 删除页面：支持输入单页、连续页和混合页码范围，例如 `1,3-5,8`。
-- 插入 PDF：把一个 PDF 插入到另一个 PDF 的开头、结尾、指定页前或指定页后。
-- 页面重排：把 PDF 页面重新排列为先奇数页、再偶数页的顺序，适合部分扫描件整理。
-- 统一尺寸：把 PDF 页面统一到横向 A4 尺寸，页面内容居中缩放。
-- PDF 转图片：使用 PyMuPDF 将指定页范围导出为 PNG 或 JPEG，并可设置 DPI、最大图片大小和压缩质量。
-
-## 环境要求
-
-- Windows 10/11
-- Python 3.10 或更新版本
-- 首次运行需要联网安装 Python 依赖
-
-主要依赖见 [requirements.txt](requirements.txt)：
-
-- Flask
-- pypdf
-- Pillow
-- PyMuPDF
-- pdf2image
+| 功能 | 说明 |
+|---|---|
+| 🖼️ 图片转 PDF | 多张图片合成为一个 PDF，支持自动旋转为横向 |
+| 🔗 PDF 合并 | 按顺序合并多个 PDF 文件 |
+| ✂️ 删除页面 | 支持单页、连续页、混合范围（如 `1,3-5,8`） |
+| 📄 插入 PDF | 在指定位置插入另一个 PDF（开头/结尾/指定页前/后） |
+| 🔄 页面重排 | 竖版页面排到横版页面前面，适合混合方向文档 |
+| 📐 统一尺寸 | 将所有横向页面统一为相同尺寸 |
+| 🖨️ PDF 转图片 | 导出为 PNG/JPEG，可调 DPI、限制文件大小、合并为长图 |
 
 ## 快速开始
 
-### Windows 一键启动
+### Windows
 
-双击 `启动.bat`。
+双击 `启动.bat`，脚本自动完成：检查 Python → 创建虚拟环境 → 安装依赖 → 启动服务 → 打开浏览器。
 
-脚本会自动完成：
+### macOS / Linux
 
-1. 检查 Python 版本。
-2. 创建本地虚拟环境 `.venv`。
-3. 安装依赖。
-4. 启动 Web 服务。
-5. 打开浏览器访问本地页面。
-
-如果浏览器没有自动打开，复制终端里显示的地址访问，一般是：
-
-```text
-http://127.0.0.1:5000
+```bash
+chmod +x start.sh && ./start.sh
 ```
 
-如果 5000 端口被占用，程序会自动寻找可用端口。
+也可双击 `启动.command`（macOS）。
 
 ### 手动启动
 
-Windows：
+<details>
+<summary>展开查看</summary>
+
+**Windows**
 
 ```bat
 python -m venv .venv
@@ -60,7 +49,7 @@ python -m venv .venv
 .venv\Scripts\python app.py
 ```
 
-macOS / Linux：
+**macOS / Linux**
 
 ```bash
 python3 -m venv .venv
@@ -68,89 +57,98 @@ python3 -m venv .venv
 .venv/bin/python app.py
 ```
 
-## 使用说明
+</details>
 
-1. 打开本地 Web 页面。
-2. 选择需要的功能标签。
-3. 上传 PDF 或图片文件。
-4. 填写页码、插入位置、导出格式等参数。
-5. 点击处理按钮。
-6. 下载生成的文件。
+启动后访问 [http://127.0.0.1:5000](http://127.0.0.1:5000)（端口被占用时自动切换）。
 
-页码从 1 开始。删除页面等功能支持如下格式：
+## 使用指南
 
-```text
-1
-1,3,5
-1-5
-1,3-5,8
+1. 打开 Web 页面，选择功能标签
+2. 上传 PDF 或图片文件
+3. 填写参数（页码、插入位置、导出格式等）
+4. 点击处理，下载生成的文件
+
+页码从 1 开始，支持格式：
+
 ```
-
-## PDF 转图片说明
-
-Web 页面中的 PDF 转图片功能使用 PyMuPDF，不需要额外安装 Poppler。为避免意外占用过多内存，Web 端会校验 DPI（36-600），并限制超大长图；普通的多页图片导出会逐页渲染和写盘，不会一次把全部页面保存在内存中。
-
-`cli/to_picture.py` 是命令行辅助脚本，使用 `pdf2image`，可能需要 Poppler。脚本会按以下顺序查找 Poppler：
-
-1. 环境变量 `POPPLER_PATH`
-2. 项目目录下的 `poppler/Library/bin`
-3. 项目目录下的 `poppler/bin`
-4. 系统 `PATH`
-
-如果只使用 Web 页面，可以忽略 Poppler。
-
-## 测试
-
-项目使用 `pytest` 覆盖主要 Web 接口和 PDF 处理流程：
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+1           → 第 1 页
+1,3,5       → 第 1、3、5 页
+1-5         → 第 1 至 5 页
+1,3-5,8     → 混合格式
 ```
-
-GitHub Actions 会在 Python 3.10 和 3.12 环境中自动运行测试。
 
 ## 项目结构
 
-```text
+```
 pdf-tool/
-├── app.py              # Flask Web UI 和 PDF 处理接口
+├── app.py                 # Flask Web 应用入口
 ├── requirements.txt       # 运行依赖
 ├── requirements-dev.txt   # 测试依赖
-├── tests/                 # 自动化测试
-├── 启动.bat               # Windows 一键启动脚本
-├── cli/                   # 命令行辅助脚本
-└── archive/               # 本地工作目录，不提交个人 PDF 或图片
+├── tests/                 # pytest 自动化测试
+├── 启动.bat               # Windows 一键启动
+├── 启动.command           # macOS 一键启动
+├── start.sh               # macOS / Linux 启动脚本
+├── cli/                   # 命令行辅助工具
+│   ├── fun.py             #   图片合成 PDF
+│   ├── to_picture.py      #   PDF 导出图片
+│   └── paths.py           #   路径工具
+└── archive/               # 本地工作目录（不提交）
 ```
 
-## 发布注意
+## 技术细节
 
-`archive/` 是本地临时工作目录，用于放置个人 PDF、图片和导出结果。公开仓库只保留目录说明，不包含用户文件。
+### PDF 转图片
 
-`.venv/`、`__pycache__/`、导出的 PDF/图片和压缩包等文件已通过 `.gitignore` 排除。
+Web 端使用 **PyMuPDF（fitz）**，无需额外安装 Poppler。多页导出采用逐页渲染、逐页写盘策略，避免内存溢出。参数范围：
+
+- DPI：36–600
+- 文件大小限制：0–51200 KB（仅 JPG）
+- 长图像素上限：6000 万像素
+
+### CLI 工具
+
+`cli/to_picture.py` 使用 `pdf2image`，按以下优先级查找 Poppler：
+
+1. 环境变量 `POPPLER_PATH`
+2. `poppler/Library/bin`
+3. `poppler/bin`
+4. 系统 `PATH`
+
+## 测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+CI 在 Ubuntu、macOS、Windows 上自动运行，覆盖 Python 3.10 / 3.12。
 
 ## 常见问题
 
-### 启动时提示找不到 Python
+<details>
+<summary>找不到 Python</summary>
 
-安装 Python 3.10 或更新版本，并在安装时勾选 `Add python.exe to PATH`，然后重新运行 `启动.bat`。
+安装 Python 3.10+，Windows 需勾选 "Add python.exe to PATH"。
+</details>
 
-### 首次运行依赖安装失败
+<details>
+<summary>依赖安装失败</summary>
 
-首次运行需要联网下载依赖。检查网络后重新运行 `启动.bat`。
+首次运行需要联网。检查网络后重试，或手动执行 `pip install -r requirements.txt`。
+</details>
 
-### 上传大文件失败
+<details>
+<summary>上传大文件失败</summary>
 
-当前 Web 服务默认限制上传大小为 100MB。可以在 `app.py` 中调整：
+默认限制 100MB，修改 `app.py` 中的 `MAX_CONTENT_LENGTH` 可调整。
+</details>
 
-```python
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
-```
+<details>
+<summary>PDF 处理失败</summary>
 
-### PDF 处理失败
-
-可能原因包括文件损坏、加密 PDF、页码范围无效、输出图片尺寸过大等。请先用小文件测试，确认 PDF 可正常打开。
+可能原因：文件损坏、加密 PDF、页码范围无效、输出尺寸过大。先用小文件测试。
+</details>
 
 ## 许可证
 
-本项目使用 MIT License，详见 [LICENSE](LICENSE)。
+[MIT](LICENSE)
