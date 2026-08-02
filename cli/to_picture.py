@@ -51,7 +51,7 @@ def pdf_range_to_images(pdf_path, start_page, end_page,
         images = convert_from_path(**options)
     except Exception as exc:
         raise RuntimeError(
-            "PDF 转图片需要 Poppler。请把 Poppler 放到 12pdffun/poppler/Library/bin，"
+            "PDF 转图片需要 Poppler。请把 Poppler 放到项目目录下的 poppler/Library/bin，"
             "或设置环境变量 POPPLER_PATH，或把 Poppler bin 加入系统 PATH。"
         ) from exc
 

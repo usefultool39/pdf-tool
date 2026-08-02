@@ -1,10 +1,10 @@
-"""工作区路径：个人 PDF/图片等归档在 12pdffun 根目录下的 archive/ 里。"""
+"""工作区路径：个人 PDF/图片等归档在项目根目录下的 archive/ 里。"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-# 12pdffun 根目录（cli 的上一级）
+# 项目根目录（cli 的上一级）
 PKG_ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE_DIR = PKG_ROOT / "archive"
 
