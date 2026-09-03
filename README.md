@@ -1,3 +1,5 @@
+> **PDF 工具箱（PDF Tool）**：本地运行、无需上传的 PDF 处理工具集——图片转 PDF、合并、删页、插入、页面重排、PDF 转图片，全部在本机完成。
+
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/Flask-3.0%2B-lightgrey?logo=flask" alt="Flask">
